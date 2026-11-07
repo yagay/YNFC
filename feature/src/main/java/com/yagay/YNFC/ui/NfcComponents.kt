@@ -23,6 +23,9 @@ fun RuntimeStatusPanel(status: RuntimeStatus, operationMessage: String?, readMod
         status.commandGeneration != status.handledGeneration
     val semanticBusy = status.operationState in setOf("APPLYING", "STOPPING", "RESETTING_CONTROLLER")
     val commandFailed = status.commandStatus in setOf("FAILED", "TRIGGER_FAILED", "OBSERVER_FAILED") || status.operationState == "FAILED"
+    val oemAckOnly = status.commandStatus == "OEM_ACK_UNVERIFIED" &&
+        status.verificationConfidence == "OEM_ACK_ONLY" &&
+        status.commandPid == status.currentPid && status.rfPid == status.currentPid
     // The command row is diagnostic/history. Keep the single blue BUSY indicator on the
     // user-facing simulation row so one operation is not shown as three simultaneous blue states.
     val commandTone = if (commandFailed) StatusTone.ERROR else StatusTone.IDLE
@@ -31,6 +34,7 @@ fun RuntimeStatusPanel(status: RuntimeStatus, operationMessage: String?, readMod
             "已提交 STOP · 正在重新初始化 NFC Controller · gen=${status.commandGeneration} · pid=${status.commandPid}"
         commandInFlight || semanticBusy ->
             "已提交 ${status.commandAction.ifBlank { "UNKNOWN" }} · ${status.operationState} · gen=${status.commandGeneration} consumed=${status.consumedGeneration} completed=${status.handledGeneration} · pid=${status.commandPid}"
+        oemAckOnly -> "ColorOS 原生 NFC-A 接口已接受参数，外部读卡器尚未验证 · gen=${status.commandGeneration}"
         status.commandStatus == "SUCCESS" && status.commandGeneration == status.handledGeneration ->
             "当前空闲 · 最近操作 ${status.commandAction.ifBlank { "UNKNOWN" }} 成功 · gen=${status.commandGeneration} · pid=${status.commandPid}"
         commandFailed ->
@@ -51,6 +55,10 @@ fun RuntimeStatusPanel(status: RuntimeStatus, operationMessage: String?, readMod
             applyVerified -> {
                 simulationTone = StatusTone.OK
                 simulationDetail = "模拟已生效 · UID=${status.selectedUid ?: "-"}"
+            }
+            oemAckOnly -> {
+                simulationTone = StatusTone.WARNING
+                simulationDetail = "ColorOS 已提交 NFC-A 参数 · UID=${status.selectedUid ?: "-"} · 请用外部读卡器核对"
             }
             commandFailed -> {
                 simulationTone = StatusTone.ERROR
