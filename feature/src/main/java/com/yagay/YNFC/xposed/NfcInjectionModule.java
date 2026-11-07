@@ -1070,6 +1070,7 @@ public class NfcInjectionModule extends XposedModule {
         // A true Boolean is *only* OEM method acceptance, not an externally read UID.
         if (cfg.active) {
             ColorOsTypeAController.Result oem = colorOsTypeAController.apply(cfg.uid, cfg.sak, cfg.atqa, nfcClassLoader);
+            persistColorOsAttempt(cfg, oem);
             if (oem.available) {
                 if (oem.accepted) {
                     controllerReinitRequired = true;
@@ -1100,6 +1101,19 @@ public class NfcInjectionModule extends XposedModule {
      * RF_CONFIG_WRITE VERIFIED or an external-reader UID claim. New processes replay the durable
      * desired command, and STOP uses the existing controller restart/stock restoration fallback.
      */
+    private void persistColorOsAttempt(SimConfig cfg, ColorOsTypeAController.Result result) {
+        ContentValues values = baseHookState();
+        values.put("coloros_type_a_generation", cfg.generation);
+        values.put("coloros_type_a_pid", Process.myPid());
+        values.put("coloros_type_a_controller_epoch", cfg.controllerEpoch);
+        values.put("coloros_type_a_stage", result.stage);
+        values.put("coloros_type_a_detail", result.detail);
+        values.put("coloros_type_a_method_accepted", result.accepted);
+        writeValuesWithRetry(values, 8, 75L);
+        Log.i(TAG, "COLOROS TYPE A attempt generation=" + cfg.generation +
+                " stage=" + result.stage + " accepted=" + result.accepted + " detail=" + result.detail);
+    }
+
     private void completeColorOsAck(SimConfig cfg, String uid, String detail) {
         int pid = Process.myPid();
         completedGeneration = cfg.generation;
@@ -1144,6 +1158,7 @@ public class NfcInjectionModule extends XposedModule {
                 colorOsAckControllerEpoch == cfg.controllerEpoch) return;
         ColorOsTypeAController.Result result =
                 colorOsTypeAController.apply(cfg.uid, cfg.sak, cfg.atqa, nfcClassLoader);
+        persistColorOsAttempt(cfg, result);
         if (result.accepted) {
             controllerReinitRequired = true;
             restoreMode = "CONTROLLER_REINIT";
