@@ -141,6 +141,49 @@ Do not export NFC payment data, card secrets, secure-element contents, or
 personal identifiers. Avoid a device-wide reboot for a probe; a controlled NFC
 process reload is sufficient to reload newly installed Hook code if supported.
 
+## Device-verified ColorOS 17 Type-A OEM backend
+
+The user-supplied `NFC Service 17.0.0.260114.apk` has been inspected locally,
+including `classes.dex` and `classes2.dex`. It contains the following exact
+runtime signatures (not inferred from the legacy OxygenOS code):
+
+- `com.oplus.nfc.IVendorNfcAdapter#setHceTypeAConfig(boolean,byte[],byte[],byte[]):boolean`
+- `com.oplus.nfc.OplusNfcAdapterService#setHceTypeAConfig(boolean,byte[],byte[],byte[]):boolean`
+- `com.oplus.nfc.hceaccesscard.HceAccessCard#doSetHceTypeAConfig(boolean,byte[],byte[],byte[]):boolean`
+- `com.oplus.nfc.common.NfcChipDeviceImpl#doSetHceTypeAConfig(boolean,byte[],byte[],byte[]):boolean`
+- `com.android.nfc.dhimpl.NativeNfcManager#setNciConfig(int,byte[],int,boolean):void`
+
+The OPlus service's own log strings confirm the order is **enabled, ATQA,
+SAK, UID**, not the legacy YNFC hook's `UID, SAK, ATQA`. The OEM access-card
+implementation checks that NFC is enabled and calls
+`NfcFeatureFetcher.isSupportHceAccessCardByRegion()`. When supported it
+performs vendor `NfcAdapter.sendVendorNciMessage()` calls.
+
+Production `ColorOsTypeAController` uses `ServiceManager.checkService`
+for the observed `oplus_nfc_service` and verifies its declared Binder
+descriptor `com.oplus.nfc.IVendorNfcAdapter`. It resolves the generated AIDL
+stub from the running NFC process; **no numeric transaction code is guessed**.
+The API performs its own permissions and region checks, which YNFC does not
+bypass. If the service is absent, the existing generic RF_CONFIG_WRITE logic
+remains the fallback.
+
+**Honest verification:** An OEM `true` response produces
+`command_status=OEM_ACK_UNVERIFIED` with `verification_confidence=OEM_ACK_ONLY`,
+`rf_accepted=false`, and `effective_state=UNKNOWN`. This is not treated as
+RF-write proof or proof of a UID read by an external NFC reader. An independent
+reader must confirm the UID, ATQA and SAK. STOP uses the existing NFC service
+reinitialization fallback to restore stock RF when exact restoration evidence
+is unavailable. A new NFC process replays the persisted request.
+
+Card ATQA is forwarded as stored, without guessing byte order. The
+commonly observed stored `0004` and historical raw OEM default `0400` are
+both two-byte values; verify the actual intended wire representation with a
+reader rather than silently reversing bytes.
+
+The ColorOS code path does not need a new `HOOK_BUILD` for each diagnostic
+change. Reload only the NFC process when installing new hook code; a whole
+phone reboot is not the default test step.
+
 ## OTA maintenance procedure
 
 After a system upgrade:
