@@ -48,6 +48,16 @@ internal class SimulationCoordinator(
                 return@execute
             }
 
+            // Never claim stock restored from process restart if ColorOS refused to
+            // disable its persistent HCE Type-A access-card mode first.
+            if (state.commandGeneration == generation && state.handledGeneration == generation &&
+                state.commandStatus == "FAILED" &&
+                state.rfStatus.startsWith("OEM_DISABLE")) {
+                AppLogger.i("SIMULATION: STOP native ColorOS disable failed; refusing unverified stock restart confirmation generation=$generation")
+                onDone(state, "ColorOS 原生 NFC-A 模式关闭失败，未确认恢复原厂；请检查 NFC/区域状态和诊断日志")
+                return@execute
+            }
+
             AppLogger.i("SIMULATION: STOP handoff snapshot before fallback generation=$generation\n${statusSummary(state)}\nPROVIDER=${runtimeRepository.readProviderMap().toSortedMap()}")
             if (!runtimeRepository.isCurrentCommandGeneration(generation)) {
                 state = runtimeRepository.read(includeRootPid = true)
