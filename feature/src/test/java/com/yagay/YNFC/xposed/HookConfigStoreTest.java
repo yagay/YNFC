@@ -16,6 +16,7 @@ public class HookConfigStoreTest {
         values.put("uid", "04A1B2C3");
         values.put("sak", "08");
         values.put("atqa", "0004");
+        values.put("coloros_type_a_mode_armed", "true");
         values.put("command_generation", "100");
         values.put("command_consumed_generation", "100");
         values.put("command_handled_generation", "100");
@@ -27,6 +28,8 @@ public class HookConfigStoreTest {
         assertTrue(config.active);
         assertEquals("08", config.sak);
         assertEquals("0004", config.atqa);
+        assertTrue(config.colorOsTypeAArmed);
+        assertTrue(config.withControllerEpoch(60L).colorOsTypeAArmed);
         assertEquals("APPLY", config.commandAction);
         assertEquals(100L, config.generation);
         assertEquals(1234, config.commandPid);
