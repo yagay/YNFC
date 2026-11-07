@@ -115,6 +115,7 @@ public class NfcInjectionModule extends XposedModule {
     private volatile boolean controllerReinitRequired;
     private volatile String restoreMode = "NONE";
     private volatile long colorOsAckControllerEpoch = Long.MIN_VALUE;
+    private volatile boolean colorOsOemInvocationInProgress;
 
     @Override public void onModuleLoaded(XposedModuleInterface.ModuleLoadedParam param) {
         super.onModuleLoaded(param);
@@ -430,6 +431,9 @@ public class NfcInjectionModule extends XposedModule {
     private void installRfHook(ClassLoader cl, int pid, HookTarget target) throws Exception {
         Method method = target.resolve(cl);
         hook(method).intercept(chain -> {
+            // Avoid rewriting a nested generic config callback while the ColorOS native
+            // Type-A setter is already applying the desired UID through vendor NCI.
+            if (colorOsOemInvocationInProgress) return chain.proceed();
             Object[] args = chain.getArgs().toArray();
             int payloadArg = findSingleByteArrayArg(args);
             if (payloadArg < 0) return chain.proceed();
@@ -1065,7 +1069,7 @@ public class NfcInjectionModule extends XposedModule {
         // sufficient proof that the OEM access-card mode has been cleared.
         if (!cfg.active && (cfg.colorOsTypeAArmed || "COLOROS_OEM_DISABLE_AND_REINIT".equals(restoreMode))) {
             ColorOsTypeAController.Result disabled =
-                    colorOsTypeAController.disable(cfg.uid, cfg.sak, cfg.atqa, nfcClassLoader);
+                    callColorOsTypeA(false, cfg);
             persistColorOsAttempt(cfg, disabled);
             if (!disabled.accepted) {
                 failCommand(cfg, "OEM_DISABLE_FAILED", "", disabled.stage + ": " + disabled.detail,
@@ -1096,7 +1100,7 @@ public class NfcInjectionModule extends XposedModule {
         // signed OEM service API; it internally checks region/NFC state and sends vendor NCI.
         // A true Boolean is *only* OEM method acceptance, not an externally read UID.
         if (cfg.active) {
-            ColorOsTypeAController.Result oem = colorOsTypeAController.apply(cfg.uid, cfg.sak, cfg.atqa, nfcClassLoader);
+            ColorOsTypeAController.Result oem = callColorOsTypeA(true, cfg);
             persistColorOsAttempt(cfg, oem);
             if (oem.available) {
                 if (oem.accepted) {
@@ -1128,6 +1132,17 @@ public class NfcInjectionModule extends XposedModule {
      * RF_CONFIG_WRITE VERIFIED or an external-reader UID claim. New processes replay the durable
      * desired command, and STOP uses the existing controller restart/stock restoration fallback.
      */
+    private ColorOsTypeAController.Result callColorOsTypeA(boolean enabled, SimConfig cfg) {
+        colorOsOemInvocationInProgress = true;
+        try {
+            return enabled
+                    ? colorOsTypeAController.apply(cfg.uid, cfg.sak, cfg.atqa, nfcClassLoader)
+                    : colorOsTypeAController.disable(cfg.uid, cfg.sak, cfg.atqa, nfcClassLoader);
+        } finally {
+            colorOsOemInvocationInProgress = false;
+        }
+    }
+
     private void persistColorOsAttempt(SimConfig cfg, ColorOsTypeAController.Result result) {
         ContentValues values = baseHookState();
         values.put("coloros_type_a_generation", cfg.generation);
@@ -1184,8 +1199,7 @@ public class NfcInjectionModule extends XposedModule {
                 !"OEM_ACK_UNVERIFIED".equals(cfg.commandStatus) ||
                 cfg.handledGeneration != cfg.generation ||
                 colorOsAckControllerEpoch == cfg.controllerEpoch) return;
-        ColorOsTypeAController.Result result =
-                colorOsTypeAController.apply(cfg.uid, cfg.sak, cfg.atqa, nfcClassLoader);
+        ColorOsTypeAController.Result result = callColorOsTypeA(true, cfg);
         persistColorOsAttempt(cfg, result);
         if (result.accepted) {
             controllerReinitRequired = true;
