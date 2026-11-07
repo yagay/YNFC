@@ -1060,6 +1060,33 @@ public class NfcInjectionModule extends XposedModule {
         Log.i(TAG, "COMMAND " + action + " reason=" + reason + " generation=" + cfg.generation + " uid=" + cfg.uid + " pid=" + pid +
                 " restoreMode=" + restoreMode);
 
+        // ColorOS HCE Type-A stores its mode/UID settings in the OEM NFC service, not just
+        // volatile RF routing. Disable its own feature first; restarting NFC alone is NOT
+        // sufficient proof that the OEM access-card mode has been cleared.
+        if (!cfg.active && (cfg.colorOsTypeAArmed || "COLOROS_OEM_DISABLE_AND_REINIT".equals(restoreMode))) {
+            ColorOsTypeAController.Result disabled =
+                    colorOsTypeAController.disable(cfg.uid, cfg.sak, cfg.atqa, nfcClassLoader);
+            persistColorOsAttempt(cfg, disabled);
+            if (!disabled.accepted) {
+                failCommand(cfg, "OEM_DISABLE_FAILED", "", disabled.stage + ": " + disabled.detail,
+                        NativeOutcome.notInvoked());
+                return;
+            }
+            ContentValues resetMode = baseHookState();
+            resetMode.put("coloros_type_a_mode_armed", false);
+            if (!writeValuesSynchronously(resetMode, 8, 75L)) {
+                failCommand(cfg, "OEM_DISABLE_STATE_FAILED", "",
+                        "OEM disable accepted, but persistent restore marker could not be saved",
+                        NativeOutcome.notInvoked());
+                return;
+            }
+            restoreMode = "CONTROLLER_REINIT";
+            controllerReinitRequired = true;
+            persistRestoreState();
+            requestControllerRestart(cfg, "ColorOS native Type-A disabled; resetting NFC controller before declaring stock");
+            return;
+        }
+
         if (!cfg.active && controllerReinitRequired) {
             requestControllerRestart(cfg, "Appended LA_NFCID1 requires NFC process/controller restart; direct stock delete is not assumed safe");
             return;
@@ -1074,7 +1101,7 @@ public class NfcInjectionModule extends XposedModule {
             if (oem.available) {
                 if (oem.accepted) {
                     controllerReinitRequired = true;
-                    restoreMode = "CONTROLLER_REINIT";
+                    restoreMode = "COLOROS_OEM_DISABLE_AND_REINIT";
                     persistRestoreState();
                     completeColorOsAck(cfg, normalizeUid(cfg.uid), oem.detail);
                 } else {
@@ -1142,6 +1169,7 @@ public class NfcInjectionModule extends XposedModule {
         v.put("rf_generation", cfg.generation);
         v.put("rf_controller_epoch", cfg.controllerEpoch);
         v.put("rf_verification", "OEM_ACK_ONLY_EXTERNAL_READER_REQUIRED");
+        v.put("coloros_type_a_mode_armed", true);
         v.put("full_diag_stage", "OEM_TYPE_A_ACCEPTED");
         v.put("full_diag_summary", detail);
         writeValuesWithRetry(v, 20, 100L);
@@ -1161,7 +1189,7 @@ public class NfcInjectionModule extends XposedModule {
         persistColorOsAttempt(cfg, result);
         if (result.accepted) {
             controllerReinitRequired = true;
-            restoreMode = "CONTROLLER_REINIT";
+            restoreMode = "COLOROS_OEM_DISABLE_AND_REINIT";
             persistRestoreState();
             completeColorOsAck(cfg, normalizeUid(cfg.uid), result.detail);
         } else if (result.available) {
