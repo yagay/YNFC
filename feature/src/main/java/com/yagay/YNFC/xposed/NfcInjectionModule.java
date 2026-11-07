@@ -55,6 +55,7 @@ public class NfcInjectionModule extends XposedModule {
     private final ExecutorService commandExecutor = Executors.newSingleThreadExecutor(r -> daemon(r, "NfcUIDSim-Command"));
     private final ExecutorService lifecycleExecutor = Executors.newSingleThreadExecutor(r -> daemon(r, "NfcUIDSim-Lifecycle"));
     private final ExecutorService earlyReplayExecutor = Executors.newSingleThreadExecutor(r -> daemon(r, "NfcUIDSim-EarlyReplay"));
+    private final ExecutorService colorOsProbeExecutor = Executors.newSingleThreadExecutor(r -> daemon(r, "NfcUIDSim-ColorOSProbe"));
     private final HookDiscoveryEngine discoveryEngine = new HookDiscoveryEngine();
     private final RfPayloadEngine payloadEngine = new RfPayloadEngine();
     private final HookProfileStore profileStore = new HookProfileStore();
@@ -385,6 +386,42 @@ public class NfcInjectionModule extends XposedModule {
                 learningMode ? "RF_CONFIG_WRITE learning mode; highest-score target owns mutation" : "RF_CONFIG_WRITE verified profile ready",
                 activeTarget == null ? null : activeTarget.fingerprint());
         startCommandBridge(app, pid);
+        // A separate daemon keeps slow OEM Dex/service introspection off the command path.
+        // The probe never invokes UID setters and never changes active RF configuration.
+        colorOsProbeExecutor.execute(() -> persistColorOsCapabilityInventory(cl, pid));
+    }
+
+    private void persistColorOsCapabilityInventory(ClassLoader cl, int pid) {
+        try {
+            List<String> methods = discoveryEngine.discoverColorOsUidEntrypoints(cl);
+            String services = NfcProcessVendorController.inspectKnownServiceDescriptors();
+            boolean typeACandidate = false;
+            for (String method : methods) {
+                if (method.contains("#setHceTypeAConfig(") || method.contains("#doSetHceTypeAConfig(")) {
+                    typeACandidate = true;
+                    break;
+                }
+            }
+            ContentValues values = baseHookState();
+            values.put("coloros_probe_pid", pid);
+            values.put("coloros_probe_status", "READ_ONLY_METHOD_AND_SERVICE_INVENTORY");
+            values.put("coloros_probe_type_a_candidate", typeACandidate);
+            values.put("coloros_probe_method_count", methods.size());
+            values.put("coloros_probe_methods", String.join(" | ", methods));
+            values.put("coloros_probe_services", services);
+            values.put("coloros_probe_note", "API presence is not call proof, native success, or external-reader UID verification");
+            writeValuesWithRetry(values, 8, 75L);
+            Log.i(TAG, "COLOROS PROBE pid=" + pid + " typeACandidate=" + typeACandidate +
+                    " methodCount=" + methods.size() + " methods=" + String.join(" | ", methods) +
+                    " services=" + services);
+        } catch (Throwable t) {
+            ContentValues values = baseHookState();
+            values.put("coloros_probe_pid", pid);
+            values.put("coloros_probe_status", "PROBE_FAILED");
+            values.put("coloros_probe_note", t.getClass().getSimpleName() + ": " + t.getMessage());
+            writeValuesWithRetry(values, 8, 75L);
+            Log.w(TAG, "COLOROS PROBE failed pid=" + pid + " " + t.getClass().getSimpleName());
+        }
     }
 
     private void installRfHook(ClassLoader cl, int pid, HookTarget target) throws Exception {
