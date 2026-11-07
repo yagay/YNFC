@@ -27,6 +27,8 @@ final class HookConfigStore {
         boolean active = Boolean.parseBoolean(values.get("simulation_enabled"));
         boolean diagnostics = Boolean.parseBoolean(values.get("diagnostic_logging_enabled"));
         String uid = values.get("uid");
+        String sak = values.get("sak");
+        String atqa = values.get("atqa");
         long generation = NfcHookUtils.parseLong(values.get("command_generation"), 0L);
         long consumed = NfcHookUtils.parseLong(values.get("command_consumed_generation"), Long.MIN_VALUE);
         long handled = NfcHookUtils.parseLong(values.get("command_handled_generation"), Long.MIN_VALUE);
@@ -37,7 +39,7 @@ final class HookConfigStore {
         if (action.isEmpty()) action = active ? "APPLY" : "STOP";
         // A missing epoch is seeded in memory only; verified RF writes still persist the proof.
         if (controllerEpoch <= 0L) controllerEpoch = 1L;
-        return new SimConfig(true, active, uid, diagnostics, generation, consumed, handled,
+        return new SimConfig(true, active, uid, sak, atqa, diagnostics, generation, consumed, handled,
                 action, status, commandPid, controllerEpoch);
     }
 
