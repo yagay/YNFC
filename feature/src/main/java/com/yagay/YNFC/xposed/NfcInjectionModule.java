@@ -62,6 +62,7 @@ public class NfcInjectionModule extends XposedModule {
     private final HookConfigStore configStore = new HookConfigStore();
     private final HookStateWriter stateWriter = new HookStateWriter();
     private final NfcProcessVendorController vendorController = new NfcProcessVendorController();
+    private final ColorOsTypeAController colorOsTypeAController = new ColorOsTypeAController();
     private final RefreshTriggerEngine refreshTriggerEngine = new RefreshTriggerEngine();
     private final RfReplayEngine replayEngine = new RfReplayEngine();
 
@@ -113,6 +114,7 @@ public class NfcInjectionModule extends XposedModule {
     private volatile long reversibleCapturedGeneration = Long.MIN_VALUE;
     private volatile boolean controllerReinitRequired;
     private volatile String restoreMode = "NONE";
+    private volatile long colorOsAckControllerEpoch = Long.MIN_VALUE;
 
     @Override public void onModuleLoaded(XposedModuleInterface.ModuleLoadedParam param) {
         super.onModuleLoaded(param);
@@ -268,6 +270,7 @@ public class NfcInjectionModule extends XposedModule {
         Log.i(TAG, "CONTROLLER READY reason=" + reason + " pid=" + Process.myPid() +
                 " wasInvalid=" + wasInvalid);
         scheduleLifecycleRecovery("controller_ready:" + reason);
+        commandExecutor.execute(this::reapplyColorOsAfterControllerReady);
     }
 
     private void persistControllerLifecycle(String status, String source, String detail) {
@@ -1062,6 +1065,26 @@ public class NfcInjectionModule extends XposedModule {
             return;
         }
 
+        // The installed ColorOS 17 NFC APK exposes OPlus' real Type-A setter. Prefer that
+        // signed OEM service API; it internally checks region/NFC state and sends vendor NCI.
+        // A true Boolean is *only* OEM method acceptance, not an externally read UID.
+        if (cfg.active) {
+            ColorOsTypeAController.Result oem = colorOsTypeAController.apply(cfg.uid, cfg.sak, cfg.atqa, nfcClassLoader);
+            if (oem.available) {
+                if (oem.accepted) {
+                    controllerReinitRequired = true;
+                    restoreMode = "CONTROLLER_REINIT";
+                    persistRestoreState();
+                    completeColorOsAck(cfg, normalizeUid(cfg.uid), oem.detail);
+                } else {
+                    failCommand(cfg, "OEM_TYPE_A_REJECTED", normalizeUid(cfg.uid),
+                            oem.stage + ": " + oem.detail, NativeOutcome.notInvoked());
+                }
+                return;
+            }
+            Log.i(TAG, "COLOROS OEM Type-A unavailable; preserving generic RF fallback reason=" + oem.detail);
+        }
+
         NfcProcessVendorController.Result trigger = triggerRfRefresh(cfg, cfg.active, "command:" + reason);
         if (isGenerationCompleted(cfg.generation, pid)) return;
         if (trigger.success) {
@@ -1069,6 +1092,66 @@ public class NfcInjectionModule extends XposedModule {
         } else {
             writeSimpleCommandState("TRIGGER_FAILED", trigger.stage + ": " + trigger.detail, cfg.generation, action, false);
             writeSemanticState("FAILED", "UNKNOWN", "TRIGGER_FAILED", false, null);
+        }
+    }
+
+    /**
+     * Mark only the firmware API return value as accepted. This intentionally does NOT produce
+     * RF_CONFIG_WRITE VERIFIED or an external-reader UID claim. New processes replay the durable
+     * desired command, and STOP uses the existing controller restart/stock restoration fallback.
+     */
+    private void completeColorOsAck(SimConfig cfg, String uid, String detail) {
+        int pid = Process.myPid();
+        completedGeneration = cfg.generation;
+        completedPid = pid;
+        colorOsAckControllerEpoch = cfg.controllerEpoch;
+        ContentValues v = baseHookState();
+        v.put("state_generation", cfg.generation);
+        v.put("command_consumed_generation", cfg.generation);
+        v.put("command_handled_generation", cfg.generation);
+        v.put("command_action", "APPLY");
+        v.put("command_status", "OEM_ACK_UNVERIFIED");
+        v.put("command_detail", detail);
+        v.put("command_pid", pid);
+        v.put("operation_state", "IDLE");
+        v.put("effective_state", "UNKNOWN");
+        v.put("verification_confidence", "OEM_ACK_ONLY");
+        v.put("rf_accepted", false);
+        v.put("rf_native_result", "true");
+        v.put("rf_native_result_type", "boolean");
+        v.put("rf_status", "OEM_TYPE_A_ACCEPTED");
+        v.put("rf_uid", uid);
+        v.put("rf_source", "coloros-oplus-type-a");
+        v.put("rf_result", "");
+        v.put("rf_error", "");
+        v.put("rf_pid", pid);
+        v.put("rf_generation", cfg.generation);
+        v.put("rf_controller_epoch", cfg.controllerEpoch);
+        v.put("rf_verification", "OEM_ACK_ONLY_EXTERNAL_READER_REQUIRED");
+        v.put("full_diag_stage", "OEM_TYPE_A_ACCEPTED");
+        v.put("full_diag_summary", detail);
+        writeValuesWithRetry(v, 20, 100L);
+        Log.i(TAG, "COLOROS TYPE A OEM accepted generation=" + cfg.generation +
+                " pid=" + pid + " epoch=" + cfg.controllerEpoch + " uid=" + uid +
+                " (reader verification outstanding)");
+    }
+
+    private void reapplyColorOsAfterControllerReady() {
+        SimConfig cfg = readConfig();
+        if (!cfg.initialized || !cfg.active || cfg.generation <= 0L ||
+                !"OEM_ACK_UNVERIFIED".equals(cfg.commandStatus) ||
+                cfg.handledGeneration != cfg.generation ||
+                colorOsAckControllerEpoch == cfg.controllerEpoch) return;
+        ColorOsTypeAController.Result result =
+                colorOsTypeAController.apply(cfg.uid, cfg.sak, cfg.atqa, nfcClassLoader);
+        if (result.accepted) {
+            controllerReinitRequired = true;
+            restoreMode = "CONTROLLER_REINIT";
+            persistRestoreState();
+            completeColorOsAck(cfg, normalizeUid(cfg.uid), result.detail);
+        } else if (result.available) {
+            failCommand(cfg, "OEM_REAPPLY_FAILED", normalizeUid(cfg.uid),
+                    result.stage + ": " + result.detail, NativeOutcome.notInvoked());
         }
     }
 
