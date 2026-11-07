@@ -47,6 +47,14 @@ final class ColorOsTypeAController {
     }
 
     Result apply(String uidHex, String sakHex, String atqaHex, ClassLoader nfcLoader) {
+        return setEnabled(true, uidHex, sakHex, atqaHex, nfcLoader);
+    }
+
+    Result disable(String uidHex, String sakHex, String atqaHex, ClassLoader nfcLoader) {
+        return setEnabled(false, uidHex, sakHex, atqaHex, nfcLoader);
+    }
+
+    private Result setEnabled(boolean enabled, String uidHex, String sakHex, String atqaHex, ClassLoader nfcLoader) {
         final byte[] uid;
         final byte[] sak;
         final byte[] atqa;
@@ -84,10 +92,12 @@ final class ColorOsTypeAController {
             Method setter = oem.getClass().getMethod(
                     "setHceTypeAConfig", boolean.class, byte[].class, byte[].class, byte[].class);
             // Confirmed device APK order: enabled, ATQA, SAK, UID.
-            Object returned = setter.invoke(oem, true, atqa, sak, uid);
+            Object returned = setter.invoke(oem, enabled, atqa, sak, uid);
             return Boolean.TRUE.equals(returned)
-                    ? Result.accepted()
-                    : Result.rejected("OEM_METHOD_REJECTED",
+                    ? new Result(true, true, enabled ? "OEM_METHOD_ACCEPTED" : "OEM_DISABLE_ACCEPTED",
+                            enabled ? "ColorOS Type-A method returned true; external RF UID not verified"
+                                    : "ColorOS Type-A disable method returned true; stock RF reset still required")
+                    : Result.rejected(enabled ? "OEM_METHOD_REJECTED" : "OEM_DISABLE_REJECTED",
                             "ColorOS rejected Type-A configuration (NFC state, feature/region or native NCI failure)");
         } catch (ClassNotFoundException | NoSuchMethodException e) {
             return Result.unsupported(e.getClass().getSimpleName() + ": " + e.getMessage());
