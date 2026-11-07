@@ -52,8 +52,10 @@ final class ColorOsTypeAController {
         final byte[] atqa;
         try {
             uid = parseHex(uidHex, 4, 7, 10);
-            sak = parseHex(sakHex, 1);
-            atqa = parseHex(atqaHex, 2);
+            sak = parseHex(sakHex == null || sakHex.trim().isEmpty() ? "08" : sakHex, 1);
+            // Preserve the user-supplied ATQA bytes as-is. Display-vs-wire endian mapping
+            // cannot be inferred solely from the OEM ABI and needs reader-side validation.
+            atqa = parseHex(atqaHex == null || atqaHex.trim().isEmpty() ? "0400" : atqaHex, 2);
         } catch (IllegalArgumentException e) {
             return Result.rejected("OEM_INVALID_PARAMETERS", e.getMessage());
         }
