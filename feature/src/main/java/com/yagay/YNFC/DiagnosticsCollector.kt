@@ -63,7 +63,7 @@ class DiagnosticsCollector(
         appendLine(statusSummary(status))
         appendLine()
         appendLine("--- COLOROS / OPLUS NFC UID CAPABILITY PROBE (READ ONLY) ---")
-        val colorOsFields = snapshotMap.filterKeys { it.startsWith("coloros_probe_") }
+        val colorOsFields = snapshotMap.filterKeys { it.startsWith("coloros_probe_") || it.startsWith("coloros_type_a_") }
         if (colorOsFields.isEmpty()) appendLine("No ColorOS probe data for this NFC process yet")
         else colorOsFields.toSortedMap().forEach { (key, value) -> appendLine("$key=$value") }
         appendLine("NOTE: discovered OEM methods or Binder services do not prove a changed RF UID")
