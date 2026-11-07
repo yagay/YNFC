@@ -109,6 +109,38 @@ The provider records enough information to diagnose an OTA without decompiling t
 
 The full diagnostic export already includes Provider state, so these fields are captured automatically.
 
+## ColorOS / OPlus NFC UID interface probe (read-only)
+
+Some ColorOS builds include a vendor Type-A configuration path such as
+`setHceTypeAConfig(boolean, byte[], byte[], byte[])`; others expose only
+`NativeNfcManager#setNciConfig(...)` or move functionality into OPlus/NXP
+Binder and AIDL services. The ABI and byte-array ordering are **firmware-specific**.
+Do not reuse the historical argument ordering or AIDL transaction IDs without
+verifying them against the current NFC APK and OEM libraries.
+
+The `coloros-nfc-probe` diagnostics collect:
+
+- `coloros_probe_pid` and `coloros_probe_status`: proof domain and scan status.
+- `coloros_probe_type_a_candidate`: whether a matching Type-A setter name was
+  found, **not** proof that the driver accepted a UID.
+- `coloros_probe_methods` / `coloros_probe_method_count`: runtime method
+  names, parameter types, and return types (no invocation or payload bytes).
+- `coloros_probe_services`: descriptors of known NFC/OPlus/NXP Binder services,
+  obtained using non-blocking read-only service lookup.
+
+The probe is isolated from the command executor, never calls a vendor setter,
+never performs a Binder transaction, and does not change existing `RF_CONFIG_WRITE`
+selection. Full diagnostics include the probe fields at the top of the export.
+The current NFC process must run the updated module for the results to appear.
+
+**Device evidence needed before enabling an OEM UID writer**:
+`/system/priv-app/NfcNci/NfcNci.apk` (if this is the actual `pm path`
+result), the actual OPlus NFC package paths reported by `pm path`, the vendor
+interface declarations and optional sanitized logcat from a controlled test.
+Do not export NFC payment data, card secrets, secure-element contents, or
+personal identifiers. Avoid a device-wide reboot for a probe; a controlled NFC
+process reload is sufficient to reload newly installed Hook code if supported.
+
 ## OTA maintenance procedure
 
 After a system upgrade:
