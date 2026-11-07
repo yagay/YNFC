@@ -171,9 +171,14 @@ remains the fallback.
 `command_status=OEM_ACK_UNVERIFIED` with `verification_confidence=OEM_ACK_ONLY`,
 `rf_accepted=false`, and `effective_state=UNKNOWN`. This is not treated as
 RF-write proof or proof of a UID read by an external NFC reader. An independent
-reader must confirm the UID, ATQA and SAK. STOP uses the existing NFC service
-reinitialization fallback to restore stock RF when exact restoration evidence
-is unavailable. A new NFC process replays the persisted request.
+reader must confirm the UID, ATQA and SAK. For STOP, YNFC tracks a durable
+`coloros_type_a_mode_armed` marker and first calls the **OEM disable** operation
+using the same runtime AIDL method with `enabled=false`, because ColorOS also
+writes HCE access-card configuration into system settings. Only after the OEM
+disable is accepted does it request the NFC-process/controller reset. If OEM
+disable is refused, STOP is failed explicitly and never reports stock as
+restored solely because a process was restarted. A new NFC process replays an
+active persisted apply request.
 
 Card ATQA is forwarded as stored, without guessing byte order. The
 commonly observed stored `0004` and historical raw OEM default `0400` are
