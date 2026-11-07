@@ -14,6 +14,8 @@ public class HookConfigStoreTest {
         Map<String, String> values = new HashMap<>();
         values.put("simulation_enabled", "true");
         values.put("uid", "04A1B2C3");
+        values.put("sak", "08");
+        values.put("atqa", "0004");
         values.put("command_generation", "100");
         values.put("command_consumed_generation", "100");
         values.put("command_handled_generation", "100");
@@ -23,6 +25,8 @@ public class HookConfigStoreTest {
         SimConfig config = HookConfigStore.decode(values);
         assertTrue(config.initialized);
         assertTrue(config.active);
+        assertEquals("08", config.sak);
+        assertEquals("0004", config.atqa);
         assertEquals("APPLY", config.commandAction);
         assertEquals(100L, config.generation);
         assertEquals(1234, config.commandPid);
