@@ -33,6 +33,9 @@ public final class HookDiscoveryEngine {
             "com.android.nfc.dhimpl.StNativeNfcManager",
             "com.android.nfc.VendorNfcService",
             "com.oplus.nfc.OplusNfcAdapterService",
+            "com.oplus.nfc.common.NfcChipDeviceImpl",
+            "com.oplus.nfc.hceaccesscard.HceAccessCard",
+            "com.oplus.nfc.NfcFeatureFetcher",
             "com.oplus.nfc.VendorNfcService",
             "com.oplus.nfc.IVendorNfcAdapter",
             "com.vendor.nfc.IVendorNfcAdapter"
@@ -124,6 +127,7 @@ public final class HookDiscoveryEngine {
             case "doSetHceTypeAConfig":
             case "getHceTypeAUid":
             case "setABFListenTechMask":
+            case "isSupportHceAccessCardByRegion":
             case "setNciConfig":
             case "changeRfParamsByConfig":
                 return true;
