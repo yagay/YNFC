@@ -31,6 +31,46 @@ final class NfcProcessVendorController {
         }
     }
 
+    /**
+     * Read-only inventory for ColorOS 16/17 NFC binder services. Never transact, enable a
+     * feature, or infer UID-writing support from service presence alone.
+     */
+    static String inspectKnownServiceDescriptors() {
+        String[] names = {
+                "nfc",
+                "oplus_nfc_service",
+                "nfcextnsservice",
+                "android.hardware.nfc.INfc/default",
+                "vendor.nxp.nxpnfc_aidl.INxpNfc/default",
+                "vendor.oplus.hardware.nfc.IOplusNfc/default"
+        };
+        StringBuilder out = new StringBuilder();
+        try {
+            Class<?> manager = Class.forName("android.os.ServiceManager");
+            // checkService is non-blocking: avoid stalling NFC startup while probing.
+            Method check = manager.getDeclaredMethod("checkService", String.class);
+            check.setAccessible(true);
+            for (String name : names) {
+                if (out.length() > 0) out.append(" | ");
+                try {
+                    Object object = check.invoke(null, name);
+                    if (!(object instanceof IBinder)) {
+                        out.append(name).append("=NOT_VISIBLE");
+                    } else {
+                        IBinder binder = (IBinder) object;
+                        out.append(name).append('=').append(safeDescriptor(binder));
+                    }
+                } catch (Throwable e) {
+                    out.append(name).append("=PROBE_UNAVAILABLE(")
+                            .append(e.getClass().getSimpleName()).append(')');
+                }
+            }
+        } catch (Throwable e) {
+            return "PROBE_UNAVAILABLE(" + e.getClass().getSimpleName() + ")";
+        }
+        return out.toString();
+    }
+
     Result setShareMode(boolean enabled) {
         Result last = null;
         for (int attempt = 0; attempt < STARTUP_RETRY_COUNT; attempt++) {
