@@ -109,6 +109,86 @@ The provider records enough information to diagnose an OTA without decompiling t
 
 The full diagnostic export already includes Provider state, so these fields are captured automatically.
 
+## ColorOS / OPlus NFC UID interface probe (read-only)
+
+Some ColorOS builds include a vendor Type-A configuration path such as
+`setHceTypeAConfig(boolean, byte[], byte[], byte[])`; others expose only
+`NativeNfcManager#setNciConfig(...)` or move functionality into OPlus/NXP
+Binder and AIDL services. The ABI and byte-array ordering are **firmware-specific**.
+Do not reuse the historical argument ordering or AIDL transaction IDs without
+verifying them against the current NFC APK and OEM libraries.
+
+The `coloros-nfc-probe` diagnostics collect:
+
+- `coloros_probe_pid` and `coloros_probe_status`: proof domain and scan status.
+- `coloros_probe_type_a_candidate`: whether a matching Type-A setter name was
+  found, **not** proof that the driver accepted a UID.
+- `coloros_probe_methods` / `coloros_probe_method_count`: runtime method
+  names, parameter types, and return types (no invocation or payload bytes).
+- `coloros_probe_services`: descriptors of known NFC/OPlus/NXP Binder services,
+  obtained using non-blocking read-only service lookup.
+
+The probe is isolated from the command executor, never calls a vendor setter,
+never performs a Binder transaction, and does not change existing `RF_CONFIG_WRITE`
+selection. Full diagnostics include the probe fields at the top of the export.
+The current NFC process must run the updated module for the results to appear.
+
+**Device evidence needed before enabling an OEM UID writer**:
+`/system/priv-app/NfcNci/NfcNci.apk` (if this is the actual `pm path`
+result), the actual OPlus NFC package paths reported by `pm path`, the vendor
+interface declarations and optional sanitized logcat from a controlled test.
+Do not export NFC payment data, card secrets, secure-element contents, or
+personal identifiers. Avoid a device-wide reboot for a probe; a controlled NFC
+process reload is sufficient to reload newly installed Hook code if supported.
+
+## Device-verified ColorOS 17 Type-A OEM backend
+
+The user-supplied `NFC Service 17.0.0.260114.apk` has been inspected locally,
+including `classes.dex` and `classes2.dex`. It contains the following exact
+runtime signatures (not inferred from the legacy OxygenOS code):
+
+- `com.oplus.nfc.IVendorNfcAdapter#setHceTypeAConfig(boolean,byte[],byte[],byte[]):boolean`
+- `com.oplus.nfc.OplusNfcAdapterService#setHceTypeAConfig(boolean,byte[],byte[],byte[]):boolean`
+- `com.oplus.nfc.hceaccesscard.HceAccessCard#doSetHceTypeAConfig(boolean,byte[],byte[],byte[]):boolean`
+- `com.oplus.nfc.common.NfcChipDeviceImpl#doSetHceTypeAConfig(boolean,byte[],byte[],byte[]):boolean`
+- `com.android.nfc.dhimpl.NativeNfcManager#setNciConfig(int,byte[],int,boolean):void`
+
+The OPlus service's own log strings confirm the order is **enabled, ATQA,
+SAK, UID**, not the legacy YNFC hook's `UID, SAK, ATQA`. The OEM access-card
+implementation checks that NFC is enabled and calls
+`NfcFeatureFetcher.isSupportHceAccessCardByRegion()`. When supported it
+performs vendor `NfcAdapter.sendVendorNciMessage()` calls.
+
+Production `ColorOsTypeAController` uses `ServiceManager.checkService`
+for the observed `oplus_nfc_service` and verifies its declared Binder
+descriptor `com.oplus.nfc.IVendorNfcAdapter`. It resolves the generated AIDL
+stub from the running NFC process; **no numeric transaction code is guessed**.
+The API performs its own permissions and region checks, which YNFC does not
+bypass. If the service is absent, the existing generic RF_CONFIG_WRITE logic
+remains the fallback.
+
+**Honest verification:** An OEM `true` response produces
+`command_status=OEM_ACK_UNVERIFIED` with `verification_confidence=OEM_ACK_ONLY`,
+`rf_accepted=false`, and `effective_state=UNKNOWN`. This is not treated as
+RF-write proof or proof of a UID read by an external NFC reader. An independent
+reader must confirm the UID, ATQA and SAK. For STOP, YNFC tracks a durable
+`coloros_type_a_mode_armed` marker and first calls the **OEM disable** operation
+using the same runtime AIDL method with `enabled=false`, because ColorOS also
+writes HCE access-card configuration into system settings. Only after the OEM
+disable is accepted does it request the NFC-process/controller reset. If OEM
+disable is refused, STOP is failed explicitly and never reports stock as
+restored solely because a process was restarted. A new NFC process replays an
+active persisted apply request.
+
+Card ATQA is forwarded as stored, without guessing byte order. The
+commonly observed stored `0004` and historical raw OEM default `0400` are
+both two-byte values; verify the actual intended wire representation with a
+reader rather than silently reversing bytes.
+
+The ColorOS code path does not need a new `HOOK_BUILD` for each diagnostic
+change. Reload only the NFC process when installing new hook code; a whole
+phone reboot is not the default test step.
+
 ## OTA maintenance procedure
 
 After a system upgrade:

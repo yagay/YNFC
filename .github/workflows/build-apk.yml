@@ -1,4 +1,4 @@
-name: Build and Verify YNFC APKs
+name: Build and Verify YNFC Debug APK
 
 on:
   workflow_dispatch:
@@ -74,20 +74,15 @@ jobs:
             :app:lintDebug \
             --stacktrace
 
-      - name: Build release APK
-        run: ./gradlew --no-daemon :app:assembleRelease --stacktrace
-
       - name: Verify APK files and Xposed metadata
         run: |
           set -euo pipefail
           DEBUG_APK=app/build/outputs/apk/debug/app-debug.apk
-          RELEASE_APK=app/build/outputs/apk/release/app-release.apk
           EXPECTED_VERSION_CODE=$(sed -nE 's/^[[:space:]]*versionCode = ([0-9]+)$/\1/p' app/build.gradle.kts)
           EXPECTED_VERSION_NAME=$(sed -nE 's/^[[:space:]]*versionName = "([^"]+)"$/\1/p' app/build.gradle.kts)
           test -n "$EXPECTED_VERSION_CODE"
           test -n "$EXPECTED_VERSION_NAME"
           test -f "$DEBUG_APK"
-          test -f "$RELEASE_APK"
 
           DEBUG_ABIS="$(unzip -Z1 "$DEBUG_APK" | sed -n 's#^lib/\([^/]*\)/.*#\1#p' | sort -u)"
           if [ -n "$DEBUG_ABIS" ] && [ "$DEBUG_ABIS" != "arm64-v8a" ]; then
@@ -95,7 +90,7 @@ jobs:
             exit 1
           fi
 
-          for apk in "$DEBUG_APK" "$RELEASE_APK"; do
+          for apk in "$DEBUG_APK"; do
             CONTENTS=$(unzip -Z1 "$apk")
             grep -Fxq 'META-INF/xposed/java_init.list' <<< "$CONTENTS"
             grep -Fxq 'META-INF/xposed/module.prop' <<< "$CONTENTS"
@@ -123,9 +118,3 @@ jobs:
           path: artifacts/YNFC-debug-arm64-v8a.apk
           if-no-files-found: error
 
-      - name: Upload release APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: ynfc-release
-          path: app/build/outputs/apk/release/app-release.apk
-          if-no-files-found: error

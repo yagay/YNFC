@@ -30,7 +30,7 @@ class DiagnosticsCollector(
             LogSource.KERNEL_SU -> runRoot("for f in ${'$'}(ls -t /data/adb/ksu/log/sulog* 2>/dev/null | head -n 3); do echo === ${'$'}f ===; tail -n 300 ${'$'}f; done")
             LogSource.SYSTEM -> runRoot("logcat -b all -d -v threadtime 2>/dev/null | tail -n 1800")
             LogSource.NFC -> {
-                val filter = "NfcUIDSim|NfcService|NxpNfcService|NfcChipDeviceImpl|NFCID1|COMMAND|changeRfParamsByConfig|setRfConfig|VendorNfcService|enableNfcShareMode|NfcSwitchCardDispatcher|RealTimeSwitchCardManager|HceAccessCard|LxDebugProfileCompare|StrProfileMatch|TapToShareEvent|NfcRfEventStateMachine|RoutingTableParser|NxpNciX|NxpNciR|NfcAdaptation"
+                val filter = "NfcUIDSim|NfcService|NxpNfcService|NfcChipDeviceImpl|NFCID1|COMMAND|setHceTypeAConfig|doSetHceTypeAConfig|getHceTypeAUid|setNciConfig|changeRfParamsByConfig|setRfConfig|VendorNfcService|enableNfcShareMode|NfcSwitchCardDispatcher|RealTimeSwitchCardManager|HceAccessCard|LxDebugProfileCompare|StrProfileMatch|TapToShareEvent|NfcRfEventStateMachine|RoutingTableParser|NxpNciX|NxpNciR|NfcAdaptation"
                 val pidFilter = if (pid.isNotBlank()) "${'$'}0 ~ / $pid / || ${'$'}0 ~ /$filter/" else "${'$'}0 ~ /$filter/"
                 runRoot("logcat -b all -d -v threadtime 2>/dev/null | awk '$pidFilter' | tail -n 1800")
             }
@@ -61,6 +61,12 @@ class DiagnosticsCollector(
         appendLine("Trigger: LSPosed in-process NFC command engine; AIDL transaction IDs are reflected with compatibility fallbacks")
         appendLine("--- FINAL SUMMARY ---")
         appendLine(statusSummary(status))
+        appendLine()
+        appendLine("--- COLOROS / OPLUS NFC UID CAPABILITY PROBE (READ ONLY) ---")
+        val colorOsFields = snapshotMap.filterKeys { it.startsWith("coloros_probe_") || it.startsWith("coloros_type_a_") }
+        if (colorOsFields.isEmpty()) appendLine("No ColorOS probe data for this NFC process yet")
+        else colorOsFields.toSortedMap().forEach { (key, value) -> appendLine("$key=$value") }
+        appendLine("NOTE: discovered OEM methods or Binder services do not prove a changed RF UID")
         appendLine()
         appendLine("--- SAVED CARDS ---")
         val cards = cardRepository.load()

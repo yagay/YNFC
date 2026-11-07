@@ -13,6 +13,9 @@ public class HookDiscoveryEngineTest {
         String badReturn(byte[] data) { return "x"; }
         int noBytes(int x) { return 0; }
         int twoBytes(byte[] a, byte[] b) { return 0; }
+        boolean setHceTypeAConfig(boolean enabled, byte[] uid, byte[] sak, byte[] atqa) { return true; }
+        byte[] getHceTypeAUid() { return new byte[0]; }
+        void setNciConfig(int group, byte[] payload, int length, boolean reset) { }
         int tooMany(int a, int b, int c, int d, byte[] data) { return 0; }
         int changeRfParamsByConfig(byte[] data) { return 0; }
         boolean sendRawFrame(byte[] data) { return true; }
@@ -47,4 +50,17 @@ public class HookDiscoveryEngineTest {
         assertFalse(HookDiscoveryEngine.isRfSignatureCandidate(m("twoBytes", byte[].class, byte[].class)));
         assertFalse(HookDiscoveryEngine.isRfSignatureCandidate(m("tooMany", int.class, int.class, int.class, int.class, byte[].class)));
     }
+    @Test public void colorOsProbeRecognizesHistoricalHceTypeAAndNciEntrypoints() throws Exception {
+        assertTrue(HookDiscoveryEngine.isColorOsUidMethodOfInterest(
+                m("setHceTypeAConfig", boolean.class, byte[].class, byte[].class, byte[].class)));
+        assertTrue(HookDiscoveryEngine.isColorOsUidMethodOfInterest(m("getHceTypeAUid")));
+        assertTrue(HookDiscoveryEngine.isColorOsUidMethodOfInterest(
+                m("setNciConfig", int.class, byte[].class, int.class, boolean.class)));
+        // The legacy multi-byte-array method is not a single-payload RF writer.
+        assertFalse(HookDiscoveryEngine.isRfSignatureCandidate(
+                m("setHceTypeAConfig", boolean.class, byte[].class, byte[].class, byte[].class)));
+        assertFalse(HookDiscoveryEngine.isColorOsUidMethodOfInterest(
+                m("sendRawFrame", byte[].class)));
+    }
+
 }

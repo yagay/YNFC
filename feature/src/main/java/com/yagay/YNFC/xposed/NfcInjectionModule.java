@@ -55,12 +55,14 @@ public class NfcInjectionModule extends XposedModule {
     private final ExecutorService commandExecutor = Executors.newSingleThreadExecutor(r -> daemon(r, "NfcUIDSim-Command"));
     private final ExecutorService lifecycleExecutor = Executors.newSingleThreadExecutor(r -> daemon(r, "NfcUIDSim-Lifecycle"));
     private final ExecutorService earlyReplayExecutor = Executors.newSingleThreadExecutor(r -> daemon(r, "NfcUIDSim-EarlyReplay"));
+    private final ExecutorService colorOsProbeExecutor = Executors.newSingleThreadExecutor(r -> daemon(r, "NfcUIDSim-ColorOSProbe"));
     private final HookDiscoveryEngine discoveryEngine = new HookDiscoveryEngine();
     private final RfPayloadEngine payloadEngine = new RfPayloadEngine();
     private final HookProfileStore profileStore = new HookProfileStore();
     private final HookConfigStore configStore = new HookConfigStore();
     private final HookStateWriter stateWriter = new HookStateWriter();
     private final NfcProcessVendorController vendorController = new NfcProcessVendorController();
+    private final ColorOsTypeAController colorOsTypeAController = new ColorOsTypeAController();
     private final RefreshTriggerEngine refreshTriggerEngine = new RefreshTriggerEngine();
     private final RfReplayEngine replayEngine = new RfReplayEngine();
 
@@ -112,6 +114,8 @@ public class NfcInjectionModule extends XposedModule {
     private volatile long reversibleCapturedGeneration = Long.MIN_VALUE;
     private volatile boolean controllerReinitRequired;
     private volatile String restoreMode = "NONE";
+    private volatile long colorOsAckControllerEpoch = Long.MIN_VALUE;
+    private volatile boolean colorOsOemInvocationInProgress;
 
     @Override public void onModuleLoaded(XposedModuleInterface.ModuleLoadedParam param) {
         super.onModuleLoaded(param);
@@ -267,6 +271,7 @@ public class NfcInjectionModule extends XposedModule {
         Log.i(TAG, "CONTROLLER READY reason=" + reason + " pid=" + Process.myPid() +
                 " wasInvalid=" + wasInvalid);
         scheduleLifecycleRecovery("controller_ready:" + reason);
+        commandExecutor.execute(this::reapplyColorOsAfterControllerReady);
     }
 
     private void persistControllerLifecycle(String status, String source, String detail) {
@@ -385,11 +390,50 @@ public class NfcInjectionModule extends XposedModule {
                 learningMode ? "RF_CONFIG_WRITE learning mode; highest-score target owns mutation" : "RF_CONFIG_WRITE verified profile ready",
                 activeTarget == null ? null : activeTarget.fingerprint());
         startCommandBridge(app, pid);
+        // A separate daemon keeps slow OEM Dex/service introspection off the command path.
+        // The probe never invokes UID setters and never changes active RF configuration.
+        colorOsProbeExecutor.execute(() -> persistColorOsCapabilityInventory(cl, pid));
+    }
+
+    private void persistColorOsCapabilityInventory(ClassLoader cl, int pid) {
+        try {
+            List<String> methods = discoveryEngine.discoverColorOsUidEntrypoints(cl);
+            String services = NfcProcessVendorController.inspectKnownServiceDescriptors();
+            boolean typeACandidate = false;
+            for (String method : methods) {
+                if (method.contains("#setHceTypeAConfig(") || method.contains("#doSetHceTypeAConfig(")) {
+                    typeACandidate = true;
+                    break;
+                }
+            }
+            ContentValues values = baseHookState();
+            values.put("coloros_probe_pid", pid);
+            values.put("coloros_probe_status", "READ_ONLY_METHOD_AND_SERVICE_INVENTORY");
+            values.put("coloros_probe_type_a_candidate", typeACandidate);
+            values.put("coloros_probe_method_count", methods.size());
+            values.put("coloros_probe_methods", String.join(" | ", methods));
+            values.put("coloros_probe_services", services);
+            values.put("coloros_probe_note", "API presence is not call proof, native success, or external-reader UID verification");
+            writeValuesWithRetry(values, 8, 75L);
+            Log.i(TAG, "COLOROS PROBE pid=" + pid + " typeACandidate=" + typeACandidate +
+                    " methodCount=" + methods.size() + " methods=" + String.join(" | ", methods) +
+                    " services=" + services);
+        } catch (Throwable t) {
+            ContentValues values = baseHookState();
+            values.put("coloros_probe_pid", pid);
+            values.put("coloros_probe_status", "PROBE_FAILED");
+            values.put("coloros_probe_note", t.getClass().getSimpleName() + ": " + t.getMessage());
+            writeValuesWithRetry(values, 8, 75L);
+            Log.w(TAG, "COLOROS PROBE failed pid=" + pid + " " + t.getClass().getSimpleName());
+        }
     }
 
     private void installRfHook(ClassLoader cl, int pid, HookTarget target) throws Exception {
         Method method = target.resolve(cl);
         hook(method).intercept(chain -> {
+            // Avoid rewriting a nested generic config callback while the ColorOS native
+            // Type-A setter is already applying the desired UID through vendor NCI.
+            if (colorOsOemInvocationInProgress) return chain.proceed();
             Object[] args = chain.getArgs().toArray();
             int payloadArg = findSingleByteArrayArg(args);
             if (payloadArg < 0) return chain.proceed();
@@ -1020,9 +1064,57 @@ public class NfcInjectionModule extends XposedModule {
         Log.i(TAG, "COMMAND " + action + " reason=" + reason + " generation=" + cfg.generation + " uid=" + cfg.uid + " pid=" + pid +
                 " restoreMode=" + restoreMode);
 
+        // ColorOS HCE Type-A stores its mode/UID settings in the OEM NFC service, not just
+        // volatile RF routing. Disable its own feature first; restarting NFC alone is NOT
+        // sufficient proof that the OEM access-card mode has been cleared.
+        if (!cfg.active && (cfg.colorOsTypeAArmed || "COLOROS_OEM_DISABLE_AND_REINIT".equals(restoreMode))) {
+            ColorOsTypeAController.Result disabled =
+                    callColorOsTypeA(false, cfg);
+            persistColorOsAttempt(cfg, disabled);
+            if (!disabled.accepted) {
+                failCommand(cfg, "OEM_DISABLE_FAILED", "", disabled.stage + ": " + disabled.detail,
+                        NativeOutcome.notInvoked());
+                return;
+            }
+            ContentValues resetMode = baseHookState();
+            resetMode.put("coloros_type_a_mode_armed", false);
+            if (!writeValuesSynchronously(resetMode, 8, 75L)) {
+                failCommand(cfg, "OEM_DISABLE_STATE_FAILED", "",
+                        "OEM disable accepted, but persistent restore marker could not be saved",
+                        NativeOutcome.notInvoked());
+                return;
+            }
+            restoreMode = "CONTROLLER_REINIT";
+            controllerReinitRequired = true;
+            persistRestoreState();
+            requestControllerRestart(cfg, "ColorOS native Type-A disabled; resetting NFC controller before declaring stock");
+            return;
+        }
+
         if (!cfg.active && controllerReinitRequired) {
             requestControllerRestart(cfg, "Appended LA_NFCID1 requires NFC process/controller restart; direct stock delete is not assumed safe");
             return;
+        }
+
+        // The installed ColorOS 17 NFC APK exposes OPlus' real Type-A setter. Prefer that
+        // signed OEM service API; it internally checks region/NFC state and sends vendor NCI.
+        // A true Boolean is *only* OEM method acceptance, not an externally read UID.
+        if (cfg.active) {
+            ColorOsTypeAController.Result oem = callColorOsTypeA(true, cfg);
+            persistColorOsAttempt(cfg, oem);
+            if (oem.available) {
+                if (oem.accepted) {
+                    controllerReinitRequired = true;
+                    restoreMode = "COLOROS_OEM_DISABLE_AND_REINIT";
+                    persistRestoreState();
+                    completeColorOsAck(cfg, normalizeUid(cfg.uid), oem.detail);
+                } else {
+                    failCommand(cfg, "OEM_TYPE_A_REJECTED", normalizeUid(cfg.uid),
+                            oem.stage + ": " + oem.detail, NativeOutcome.notInvoked());
+                }
+                return;
+            }
+            Log.i(TAG, "COLOROS OEM Type-A unavailable; preserving generic RF fallback reason=" + oem.detail);
         }
 
         NfcProcessVendorController.Result trigger = triggerRfRefresh(cfg, cfg.active, "command:" + reason);
@@ -1032,6 +1124,91 @@ public class NfcInjectionModule extends XposedModule {
         } else {
             writeSimpleCommandState("TRIGGER_FAILED", trigger.stage + ": " + trigger.detail, cfg.generation, action, false);
             writeSemanticState("FAILED", "UNKNOWN", "TRIGGER_FAILED", false, null);
+        }
+    }
+
+    /**
+     * Mark only the firmware API return value as accepted. This intentionally does NOT produce
+     * RF_CONFIG_WRITE VERIFIED or an external-reader UID claim. New processes replay the durable
+     * desired command, and STOP uses the existing controller restart/stock restoration fallback.
+     */
+    private ColorOsTypeAController.Result callColorOsTypeA(boolean enabled, SimConfig cfg) {
+        colorOsOemInvocationInProgress = true;
+        try {
+            return enabled
+                    ? colorOsTypeAController.apply(cfg.uid, cfg.sak, cfg.atqa, nfcClassLoader)
+                    : colorOsTypeAController.disable(cfg.uid, cfg.sak, cfg.atqa, nfcClassLoader);
+        } finally {
+            colorOsOemInvocationInProgress = false;
+        }
+    }
+
+    private void persistColorOsAttempt(SimConfig cfg, ColorOsTypeAController.Result result) {
+        ContentValues values = baseHookState();
+        values.put("coloros_type_a_generation", cfg.generation);
+        values.put("coloros_type_a_pid", Process.myPid());
+        values.put("coloros_type_a_controller_epoch", cfg.controllerEpoch);
+        values.put("coloros_type_a_stage", result.stage);
+        values.put("coloros_type_a_detail", result.detail);
+        values.put("coloros_type_a_method_accepted", result.accepted);
+        writeValuesWithRetry(values, 8, 75L);
+        Log.i(TAG, "COLOROS TYPE A attempt generation=" + cfg.generation +
+                " stage=" + result.stage + " accepted=" + result.accepted + " detail=" + result.detail);
+    }
+
+    private void completeColorOsAck(SimConfig cfg, String uid, String detail) {
+        int pid = Process.myPid();
+        completedGeneration = cfg.generation;
+        completedPid = pid;
+        colorOsAckControllerEpoch = cfg.controllerEpoch;
+        ContentValues v = baseHookState();
+        v.put("state_generation", cfg.generation);
+        v.put("command_consumed_generation", cfg.generation);
+        v.put("command_handled_generation", cfg.generation);
+        v.put("command_action", "APPLY");
+        v.put("command_status", "OEM_ACK_UNVERIFIED");
+        v.put("command_detail", detail);
+        v.put("command_pid", pid);
+        v.put("operation_state", "IDLE");
+        v.put("effective_state", "UNKNOWN");
+        v.put("verification_confidence", "OEM_ACK_ONLY");
+        v.put("rf_accepted", false);
+        v.put("rf_native_result", "true");
+        v.put("rf_native_result_type", "boolean");
+        v.put("rf_status", "OEM_TYPE_A_ACCEPTED");
+        v.put("rf_uid", uid);
+        v.put("rf_source", "coloros-oplus-type-a");
+        v.put("rf_result", "");
+        v.put("rf_error", "");
+        v.put("rf_pid", pid);
+        v.put("rf_generation", cfg.generation);
+        v.put("rf_controller_epoch", cfg.controllerEpoch);
+        v.put("rf_verification", "OEM_ACK_ONLY_EXTERNAL_READER_REQUIRED");
+        v.put("coloros_type_a_mode_armed", true);
+        v.put("full_diag_stage", "OEM_TYPE_A_ACCEPTED");
+        v.put("full_diag_summary", detail);
+        writeValuesWithRetry(v, 20, 100L);
+        Log.i(TAG, "COLOROS TYPE A OEM accepted generation=" + cfg.generation +
+                " pid=" + pid + " epoch=" + cfg.controllerEpoch + " uid=" + uid +
+                " (reader verification outstanding)");
+    }
+
+    private void reapplyColorOsAfterControllerReady() {
+        SimConfig cfg = readConfig();
+        if (!cfg.initialized || !cfg.active || cfg.generation <= 0L ||
+                !"OEM_ACK_UNVERIFIED".equals(cfg.commandStatus) ||
+                cfg.handledGeneration != cfg.generation ||
+                colorOsAckControllerEpoch == cfg.controllerEpoch) return;
+        ColorOsTypeAController.Result result = callColorOsTypeA(true, cfg);
+        persistColorOsAttempt(cfg, result);
+        if (result.accepted) {
+            controllerReinitRequired = true;
+            restoreMode = "COLOROS_OEM_DISABLE_AND_REINIT";
+            persistRestoreState();
+            completeColorOsAck(cfg, normalizeUid(cfg.uid), result.detail);
+        } else if (result.available) {
+            failCommand(cfg, "OEM_REAPPLY_FAILED", normalizeUid(cfg.uid),
+                    result.stage + ": " + result.detail, NativeOutcome.notInvoked());
         }
     }
 

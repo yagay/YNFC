@@ -25,6 +25,7 @@ internal class SimulationCoordinator(
             state = waitForCommandCompletion(generation, card.uid, apply = true, timeoutMs = 12_000)
             val message = when {
                 SimulationResultPolicy.isApplySuccess(state, generation, card.uid) -> "模拟成功 · UID=${card.uid} · NFC进程内确认"
+                isColorOsOemAck(state, generation, card.uid) -> "ColorOS 已接受 NFC-A 参数 · UID=${card.uid} · 请使用另一台 NFC 读卡器验证实际 UID"
                 !state.hookInstalled -> "模拟请求已保存，但 Hook 未就绪"
                 state.commandGeneration != generation -> "模拟请求被更新的命令替代"
                 state.commandStatus == "FAILED" || state.commandStatus == "TRIGGER_FAILED" ->
@@ -44,6 +45,16 @@ internal class SimulationCoordinator(
             if (SimulationResultPolicy.isStopSuccess(state, generation)) {
                 AppLogger.i("SIMULATION: STOP success without restart generation=$generation\n${statusSummary(state)}")
                 onDone(state, "模拟已停止 · 原厂 RF 已由 NFC 进程恢复")
+                return@execute
+            }
+
+            // Never claim stock restored from process restart if ColorOS refused to
+            // disable its persistent HCE Type-A access-card mode first.
+            if (state.commandGeneration == generation && state.handledGeneration == generation &&
+                state.commandStatus == "FAILED" &&
+                (state.rfStatus.contains("OEM_DISABLE") || state.fullDiagStage.orEmpty().startsWith("OEM_DISABLE"))) {
+                AppLogger.i("SIMULATION: STOP native ColorOS disable failed; refusing unverified stock restart confirmation generation=$generation")
+                onDone(state, "ColorOS 原生 NFC-A 模式关闭失败，未确认恢复原厂；请检查 NFC/区域状态和诊断日志")
                 return@execute
             }
 
@@ -84,7 +95,8 @@ internal class SimulationCoordinator(
         var state = RuntimeStatus()
         while (System.currentTimeMillis() < end) {
             state = runtimeRepository.read(includeRootPid = true)
-            if (if (apply) SimulationResultPolicy.isApplySuccess(state, generation, uid.orEmpty())
+            if (if (apply) SimulationResultPolicy.isApplySuccess(state, generation, uid.orEmpty()) ||
+                    isColorOsOemAck(state, generation, uid.orEmpty())
                 else SimulationResultPolicy.isStopSuccess(state, generation)) return state
             if (state.commandGeneration == generation && state.commandStatus == "RESTART_REQUIRED" &&
                 state.consumedGeneration == generation) return state
@@ -94,6 +106,14 @@ internal class SimulationCoordinator(
         }
         return state
     }
+
+    private fun isColorOsOemAck(state: RuntimeStatus, generation: Long, uid: String): Boolean =
+        state.commandGeneration == generation &&
+            state.handledGeneration == generation &&
+            state.commandStatus == "OEM_ACK_UNVERIFIED" &&
+            state.commandPid == state.currentPid &&
+            state.verificationConfidence == "OEM_ACK_ONLY" &&
+            state.rfUid.equals(uid, ignoreCase = true)
 
     private fun waitForHookOnly(timeoutMs: Long): RuntimeStatus {
         val end = System.currentTimeMillis() + timeoutMs

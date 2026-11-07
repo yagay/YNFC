@@ -25,6 +25,22 @@ public final class HookDiscoveryEngine {
             "com.android.nfc.nxp.NxpNfcService"
     };
 
+    // Read-only ColorOS/OPlus API inventory. A matching method is a candidate, NOT proof that
+    // the current firmware permits or applies a custom NFC-A UID.
+    private static final String[] COLOROS_PROBE_CLASSES = new String[] {
+            "com.android.nfc.dhimpl.NativeNfcManager",
+            "com.android.nfc.dhimpl.NxpNativeNfcManager",
+            "com.android.nfc.dhimpl.StNativeNfcManager",
+            "com.android.nfc.VendorNfcService",
+            "com.oplus.nfc.OplusNfcAdapterService",
+            "com.oplus.nfc.common.NfcChipDeviceImpl",
+            "com.oplus.nfc.hceaccesscard.HceAccessCard",
+            "com.oplus.nfc.NfcFeatureFetcher",
+            "com.oplus.nfc.VendorNfcService",
+            "com.oplus.nfc.IVendorNfcAdapter",
+            "com.vendor.nfc.IVendorNfcAdapter"
+    };
+
     private static final String[] PROVEN_TRIGGER_CLASSES = new String[] {
             "com.android.nfc.VendorNfcService$VendorNfcAdapterService",
             "com.android.nfc.nxp.NxpNfcService$NxpNfcAdapterService"
@@ -78,6 +94,73 @@ public final class HookDiscoveryEngine {
             inspectTriggerClass(classLoader, name, "dex-scan", out, seen, false);
         }
         return top(out);
+    }
+
+    /**
+     * Detect OEM Type-A UID and NCI configuration entrypoints without invoking or hooking them.
+     * This must remain distinct from RF_CONFIG_WRITE discovery: e.g. a legacy
+     * setHceTypeAConfig(boolean, byte[], byte[], byte[]) has three byte-array parameters
+     * and must never be passed to RfPayloadEngine as a one-payload RF writer.
+     */
+    public List<String> discoverColorOsUidEntrypoints(ClassLoader classLoader) {
+        List<String> entries = new ArrayList<>();
+        Set<String> visited = new HashSet<>();
+        for (String name : COLOROS_PROBE_CLASSES) {
+            inspectColorOsClass(classLoader, name, visited, entries);
+        }
+        // OEM package names differ between ColorOS builds. Inspect the installed NFC dex,
+        // but only NFC/OPlus/vendor classes and a strictly bounded number of method hits.
+        int scanned = 0;
+        for (String name : enumerateClassNames(classLoader)) {
+            if (scanned >= MAX_CLASSES || entries.size() >= 40) break;
+            if (!looksNfcRelated(name)) continue;
+            scanned++;
+            inspectColorOsClass(classLoader, name, visited, entries);
+        }
+        return entries;
+    }
+
+    static boolean isColorOsUidMethodOfInterest(Method method) {
+        if (method == null || method.isSynthetic() || method.isBridge()) return false;
+        switch (method.getName()) {
+            case "setHceTypeAConfig":
+            case "doSetHceTypeAConfig":
+            case "getHceTypeAUid":
+            case "setABFListenTechMask":
+            case "isSupportHceAccessCardByRegion":
+            case "setNciConfig":
+            case "changeRfParamsByConfig":
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private void inspectColorOsClass(ClassLoader loader, String name, Set<String> visited,
+                                     List<String> entries) {
+        if (!visited.add(name) || entries.size() >= 40) return;
+        try {
+            Class<?> cls = Class.forName(name, false, loader);
+            for (Method method : cls.getDeclaredMethods()) {
+                if (!isColorOsUidMethodOfInterest(method)) continue;
+                String signature = name + "#" + method.getName() + methodSignatureForInventory(method);
+                if (signature.length() > 240) signature = signature.substring(0, 240);
+                entries.add(signature);
+                if (entries.size() >= 40) return;
+            }
+        } catch (Throwable ignored) {
+            // An absent/blocked OEM class is expected across ColorOS variants.
+        }
+    }
+
+    private static String methodSignatureForInventory(Method method) {
+        StringBuilder out = new StringBuilder("(");
+        Class<?>[] params = method.getParameterTypes();
+        for (int i = 0; i < params.length; i++) {
+            if (i > 0) out.append(',');
+            out.append(params[i].getSimpleName());
+        }
+        return out.append(")->").append(method.getReturnType().getSimpleName()).toString();
     }
 
     private List<HookTarget> top(List<HookTarget> out) {
