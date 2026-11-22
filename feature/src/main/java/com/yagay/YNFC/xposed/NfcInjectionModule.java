@@ -61,6 +61,8 @@ public class NfcInjectionModule extends XposedModule {
     private final HookConfigStore configStore = new HookConfigStore();
     private final HookStateWriter stateWriter = new HookStateWriter();
     private final NfcProcessVendorController vendorController = new NfcProcessVendorController();
+    private final VendorTypeABackend vendorTypeABackend = new VendorTypeABackend();
+    private volatile long vendorAppliedEpoch = Long.MIN_VALUE;
     private final RefreshTriggerEngine refreshTriggerEngine = new RefreshTriggerEngine();
     private final RfReplayEngine replayEngine = new RfReplayEngine();
 
@@ -421,6 +423,9 @@ public class NfcInjectionModule extends XposedModule {
                 }
             }
 
+            // Vendor mode uses the OEM's own NFC-A API. Never rewrite this RF invocation.
+            if ("VENDOR_TYPE_A".equals(cfg.backend)) return chain.proceed();
+
             // A natural RF write in a new NFC process is the best lifecycle recovery trigger. Mark
             // it as a lifecycle reapply before mutating so a successful native result updates only
             // observed RF evidence; the original user APPLY command history remains untouched.
@@ -767,6 +772,10 @@ public class NfcInjectionModule extends XposedModule {
      */
     private void runLifecycleRecovery(String reason) {
         SimConfig cfg = readConfig();
+        if ("VENDOR_TYPE_A".equals(cfg.backend)) {
+            reapplyVendorAfterControllerReady(cfg, reason);
+            return;
+        }
         int pid = Process.myPid();
         if (!cfg.initialized || !cfg.active || cfg.uid == null || cfg.generation <= 0L ||
                 cfg.handledGeneration != cfg.generation || !"SUCCESS".equals(cfg.commandStatus)) return;
@@ -984,6 +993,26 @@ public class NfcInjectionModule extends XposedModule {
         // an already handled generation just because this Java instance lost its in-memory cache.
         boolean persistedTerminal = cfg.generation > 0L && cfg.handledGeneration == cfg.generation &&
                 ("SUCCESS".equals(cfg.commandStatus) || "FAILED".equals(cfg.commandStatus));
+        if ("VENDOR_TYPE_A".equals(cfg.backend)) {
+            if (persistedTerminal) {
+                completedGeneration = cfg.generation;
+                completedPid = pid;
+                lastTriggeredGeneration = cfg.generation;
+                if (cfg.active && "SUCCESS".equals(cfg.commandStatus) && controllerReadyObserved &&
+                        vendorAppliedEpoch != cfg.controllerEpoch) {
+                    reapplyVendorAfterControllerReady(cfg, "terminal:" + reason);
+                }
+                return;
+            }
+            if ("RESTART_REQUIRED".equals(cfg.commandStatus)) return;
+            if (isGenerationCompleted(cfg.generation, pid) || cfg.generation == lastTriggeredGeneration) return;
+            lastTriggeredGeneration = cfg.generation;
+            writeSimpleCommandState("RUNNING", "Executing OEM NFC-A " +
+                    (cfg.active ? "APPLY" : "STOP"), cfg.generation, cfg.active ? "APPLY" : "STOP", false);
+            executeVendorCommand(cfg);
+            return;
+        }
+
         if (persistedTerminal) {
             completedGeneration = cfg.generation;
             completedPid = pid;
@@ -1033,6 +1062,78 @@ public class NfcInjectionModule extends XposedModule {
             writeSimpleCommandState("TRIGGER_FAILED", trigger.stage + ": " + trigger.detail, cfg.generation, action, false);
             writeSemanticState("FAILED", "UNKNOWN", "TRIGGER_FAILED", false, null);
         }
+    }
+
+
+    private void executeVendorCommand(SimConfig cfg) {
+        activeCodec = "vendor-typea";
+        VendorTypeABackend.Result result = vendorTypeABackend.execute(nfcClassLoader, cfg);
+        SimConfig latest = readConfig();
+        if (!latest.initialized || latest.generation != cfg.generation ||
+                !"VENDOR_TYPE_A".equals(latest.backend)) return;
+        if (!result.accepted) {
+            failCommand(cfg, "VENDOR_TYPE_A_FAILED", cfg.active ? cfg.uid : "",
+                    result.detail, NativeOutcome.notInvoked());
+            return;
+        }
+        if (cfg.active) vendorAppliedEpoch = cfg.controllerEpoch;
+        else vendorAppliedEpoch = Long.MIN_VALUE;
+        completedGeneration = cfg.generation;
+        completedPid = Process.myPid();
+        ContentValues v = baseHookState();
+        v.put("state_generation", cfg.generation);
+        v.put("command_consumed_generation", cfg.generation);
+        v.put("command_handled_generation", cfg.generation);
+        v.put("command_action", cfg.active ? "APPLY" : "STOP");
+        v.put("command_status", "SUCCESS");
+        v.put("command_detail", result.detail);
+        v.put("command_pid", Process.myPid());
+        v.put("operation_state", "IDLE");
+        v.put("effective_state", cfg.active ? "ACTIVE" : "STOCK");
+        v.put("verification_confidence", "OEM_ACCEPTED");
+        v.put("rf_accepted", false);
+        v.put("rf_status", cfg.active ? "VENDOR_CONFIG_ACCEPTED" : "VENDOR_STOP_ACCEPTED");
+        v.put("rf_source", "vendor-typea");
+        v.put("rf_uid", cfg.active ? cfg.uid : "");
+        v.put("rf_result", "OEM_TRUE");
+        v.put("rf_native_result", "");
+        v.put("rf_native_result_type", "oem-binder-boolean");
+        v.put("rf_error", "");
+        v.put("rf_pid", Process.myPid());
+        v.put("rf_generation", cfg.generation);
+        v.put("rf_controller_epoch", cfg.controllerEpoch);
+        v.put("rf_verification", "EXTERNAL_READER_REQUIRED");
+        v.put("full_diag_stage", cfg.active ? "VENDOR_APPLY_ACCEPTED" : "VENDOR_STOP_ACCEPTED");
+        v.put("full_diag_summary", result.detail);
+        writeValuesWithRetry(v, 20, 100L);
+        Log.i(TAG, "VENDOR_TYPE_A " + (cfg.active ? "APPLY" : "STOP") +
+                " API accepted; external reader verification required; generation=" + cfg.generation);
+    }
+
+    private void reapplyVendorAfterControllerReady(SimConfig cfg, String reason) {
+        if (!cfg.initialized || !cfg.active || !"SUCCESS".equals(cfg.commandStatus) ||
+                cfg.generation != cfg.handledGeneration || vendorAppliedEpoch == cfg.controllerEpoch) return;
+        VendorTypeABackend.Result result = vendorTypeABackend.execute(nfcClassLoader, cfg);
+        SimConfig latest = readConfig();
+        if (!latest.initialized || latest.generation != cfg.generation ||
+                !latest.active || !"VENDOR_TYPE_A".equals(latest.backend)) return;
+        ContentValues v = baseHookState();
+        v.put("state_generation", cfg.generation);
+        v.put("rf_pid", Process.myPid());
+        v.put("rf_generation", cfg.generation);
+        v.put("rf_controller_epoch", cfg.controllerEpoch);
+        v.put("rf_accepted", false);
+        v.put("verification_confidence", result.accepted ? "OEM_ACCEPTED" : "FAILED");
+        v.put("rf_verification", result.accepted ? "EXTERNAL_READER_REQUIRED" : "FAILED");
+        v.put("rf_status", result.accepted ? "VENDOR_REAPPLY_ACCEPTED" : "VENDOR_REAPPLY_FAILED");
+        v.put("rf_source", "vendor-typea");
+        v.put("rf_error", result.accepted ? "" : result.detail);
+        v.put("full_diag_stage", result.accepted ? "VENDOR_REAPPLY_ACCEPTED" : "VENDOR_REAPPLY_FAILED");
+        v.put("full_diag_summary", reason + ": " + result.detail);
+        if (result.accepted) vendorAppliedEpoch = cfg.controllerEpoch;
+        writeValuesWithRetry(v, 8, 75L);
+        Log.i(TAG, "VENDOR_TYPE_A recovery reason=" + reason + " accepted=" + result.accepted +
+                " generation=" + cfg.generation);
     }
 
     private synchronized void clearRestoreState() {
@@ -1119,7 +1220,8 @@ public class NfcInjectionModule extends XposedModule {
                 // Early replay is lifecycle recovery, not a second command executor. Only replay a
                 // durable successful APPLY whose RF proof is stale. Pending/failed generations are
                 // left to the normal command bridge so replay cannot silently change command semantics.
-                boolean terminalDesiredApply = cfg.active && cfg.uid != null && cfg.generation > 0L &&
+                boolean terminalDesiredApply = !"VENDOR_TYPE_A".equals(cfg.backend) &&
+                        cfg.active && cfg.uid != null && cfg.generation > 0L &&
                         cfg.handledGeneration == cfg.generation && "SUCCESS".equals(cfg.commandStatus);
                 if (!terminalDesiredApply) {
                     replayEngine.clearPending(snapshot.targetFingerprint);
