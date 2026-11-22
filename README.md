@@ -4,9 +4,16 @@
 
 ## 当前版本
 
-- 应用版本：`1.0.56`（versionCode `57`）
-- Hook 构建：`40`
+- 应用版本：`1.0.57`（versionCode `58`）
+- Hook 构建：`41`
 - Provider 协议：`7`
+
+## 双后端模拟（实验）
+- **RF Hook（默认）**：保留原有 LA_NFCID1 改写、原生结果验证和恢复流程。
+- **ColorOS 原生 NFC-A**：在 com.android.nfc 进程中调用系统已有 VendorNfcAdapter.setHceTypeAConfig(enabled, atqa, sak, uid)，提交完整 UID/SAK/ATQA。
+- 只允许停止模拟后切换模式；两种后端互斥，不会自动回退到另一套写卡逻辑。
+- OEM 接口返回 true 仅代表系统接受请求，必须使用外部 NFC 读卡器确认效果；**不承诺关机后自定义 UID 可刷卡**。
+- 不修改 eSE、卡片密钥、NFCEE 路由或安全元件访问控制；官方钱包/交通卡恢复需要实机确认。
 
 ## 主要能力
 
@@ -47,7 +54,7 @@
 3. 重启 NFC 进程或手机，使新 Hook 构建被加载。
 4. 首次验证时执行一次 APPLY、STOP、再次 APPLY，并导出完整诊断。
 
-版本升级后不能只覆盖安装就判断 Hook 是否更新；诊断中的 Hook build 应为 `40`，Provider protocol 应为 `7`。
+版本升级后不能只覆盖安装就判断 Hook 是否更新；诊断中的 Hook build 应为 `41`，Provider protocol 应为 `7`。
 
 ## 自动检查
 
