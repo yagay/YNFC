@@ -37,7 +37,8 @@ final class HookConfigStore {
         if (action.isEmpty()) action = active ? "APPLY" : "STOP";
         // A missing epoch is seeded in memory only; verified RF writes still persist the proof.
         if (controllerEpoch <= 0L) controllerEpoch = 1L;
-        return new SimConfig(true, active, uid, diagnostics, generation, consumed, handled,
+        return new SimConfig(true, active, uid, values.get("sak"), values.get("atqa"),
+                values.get("simulation_backend"), diagnostics, generation, consumed, handled,
                 action, status, commandPid, controllerEpoch);
     }
 

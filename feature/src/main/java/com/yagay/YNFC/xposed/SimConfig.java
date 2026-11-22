@@ -6,6 +6,9 @@ final class SimConfig {
     final boolean active;
     final boolean diagnostics;
     final String uid;
+    final String sak;
+    final String atqa;
+    final String backend;
     final String commandAction;
     final String commandStatus;
     final long generation;
@@ -17,9 +20,20 @@ final class SimConfig {
     SimConfig(boolean initialized, boolean active, String uid, boolean diagnostics, long generation,
               long consumedGeneration, long handledGeneration, String commandAction,
               String commandStatus, int commandPid, long controllerEpoch) {
+        this(initialized, active, uid, "", "", "RF_HOOK", diagnostics, generation,
+                consumedGeneration, handledGeneration, commandAction, commandStatus, commandPid, controllerEpoch);
+    }
+
+    SimConfig(boolean initialized, boolean active, String uid, String sak, String atqa, String backend,
+              boolean diagnostics, long generation,
+              long consumedGeneration, long handledGeneration, String commandAction,
+              String commandStatus, int commandPid, long controllerEpoch) {
         this.initialized = initialized;
         this.active = active;
         this.uid = uid;
+        this.sak = sak;
+        this.atqa = atqa;
+        this.backend = "VENDOR_TYPE_A".equals(backend) ? "VENDOR_TYPE_A" : "RF_HOOK";
         this.diagnostics = diagnostics;
         this.generation = generation;
         this.consumedGeneration = consumedGeneration;
@@ -31,7 +45,7 @@ final class SimConfig {
     }
 
     SimConfig withControllerEpoch(long epoch) {
-        return new SimConfig(initialized, active, uid, diagnostics, generation, consumedGeneration,
+        return new SimConfig(initialized, active, uid, sak, atqa, backend, diagnostics, generation, consumedGeneration,
                 handledGeneration, commandAction, commandStatus, commandPid, epoch);
     }
 
