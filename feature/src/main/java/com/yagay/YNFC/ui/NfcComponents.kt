@@ -41,6 +41,8 @@ fun RuntimeStatusPanel(status: RuntimeStatus, operationMessage: String?, readMod
     val applyVerified = status.simulationEnabled &&
         status.effectiveState == "ACTIVE" && status.verificationConfidence == "VERIFIED" && status.rfAccepted &&
         status.rfUid.equals(status.selectedUid, ignoreCase = true)
+    val vendorAccepted = status.verificationConfidence == "OEM_ACCEPTED" &&
+        status.commandStatus == "SUCCESS" && status.handledGeneration == status.commandGeneration
     val stockVerified = !status.simulationEnabled &&
         status.effectiveState == "STOCK" && status.verificationConfidence == "VERIFIED" && status.rfAccepted
 
@@ -48,6 +50,10 @@ fun RuntimeStatusPanel(status: RuntimeStatus, operationMessage: String?, readMod
     val simulationDetail: String
     if (status.simulationEnabled) {
         when {
+            vendorAccepted -> {
+                simulationTone = StatusTone.WARNING
+                simulationDetail = "ColorOS 原生配置已接受 · 须实际刷卡验证，关机模式未验证"
+            }
             applyVerified -> {
                 simulationTone = StatusTone.OK
                 simulationDetail = "模拟已生效 · UID=${status.selectedUid ?: "-"}"
@@ -67,6 +73,10 @@ fun RuntimeStatusPanel(status: RuntimeStatus, operationMessage: String?, readMod
         }
     } else {
         when {
+            vendorAccepted -> {
+                simulationTone = StatusTone.WARNING
+                simulationDetail = "原生接口已接受 STOP · 请验证官方 NFC 卡恢复"
+            }
             stockVerified -> {
                 simulationTone = StatusTone.STOCK
                 simulationDetail = if (status.rfVerification == "PROCESS_RESTART")
@@ -94,6 +104,7 @@ fun RuntimeStatusPanel(status: RuntimeStatus, operationMessage: String?, readMod
     }
 
     val rfTone = when {
+        vendorAccepted -> StatusTone.WARNING
         status.effectiveState == "ACTIVE" && status.verificationConfidence == "VERIFIED" && status.rfAccepted -> StatusTone.OK
         status.effectiveState == "STOCK" && status.verificationConfidence == "VERIFIED" && status.rfAccepted -> StatusTone.STOCK
         status.operationState in setOf("APPLYING", "STOPPING", "RESETTING_CONTROLLER") -> StatusTone.WARNING
@@ -122,7 +133,9 @@ fun RuntimeStatusPanel(status: RuntimeStatus, operationMessage: String?, readMod
                 "底层诊断: ${status.rfStatus} · gen=${status.rfGeneration} · pid=${status.rfPid} · raw=${status.rfNativeResult ?: "-"} (${status.rfNativeResultType ?: "-"}) · verify=${status.rfVerification ?: "-"}",
                 fontSize = 10.sp, color = Color.Gray
             )
-            Text("触发方式: LSPosed · com.android.nfc 进程内控制", fontSize = 11.sp)
+            Text("触发方式: LSPosed · com.android.nfc 进程内控制" +
+                if (status.verificationConfidence == "OEM_ACCEPTED") " · ColorOS Vendor API" else "",
+                fontSize = 11.sp)
             Text("读卡模式: ${if (readModeEnabled) "开启" else "关闭"}", fontSize = 11.sp)
             operationMessage?.let { Text(it, fontSize = 11.sp, color = Color.Gray) }
             status.commandDetail?.takeIf { it.isNotBlank() }?.let { Text("最近命令: $it", fontSize = 10.sp, color = Color.Gray) }
