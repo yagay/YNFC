@@ -26,6 +26,8 @@ fun NfcAppScreen(
     scannedCard: CardModel?,
     readModeEnabled: Boolean,
     initialLogsEnabled: Boolean,
+    initialBackend: String,
+    onBackendChanged: (String) -> Boolean,
     diagnosticsCollector: DiagnosticsCollector,
     readRuntimeStatus: () -> RuntimeStatus,
     buildStatusSummary: (RuntimeStatus) -> String,
@@ -45,6 +47,8 @@ fun NfcAppScreen(
     var selectedSource by remember { mutableStateOf(LogSource.STATUS) }
     var diagnosticRunning by remember { mutableStateOf(false) }
     var logsEnabled by remember { mutableStateOf(initialLogsEnabled) }
+    var backend by remember(initialBackend) { mutableStateOf(initialBackend) }
+    var backendMessage by remember { mutableStateOf<String?>(null) }
     var expandedUid by remember { mutableStateOf<String?>(null) }
     var operationMessage by remember { mutableStateOf<String?>(null) }
     val logListState = rememberLazyListState()
@@ -73,6 +77,40 @@ fun NfcAppScreen(
             contentPadding = PaddingValues(bottom = 12.dp)
         ) {
             item { RuntimeStatusPanel(status, operationMessage, readModeEnabled) }
+            item {
+                Card(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Text("模拟方式", fontWeight = FontWeight.Bold)
+                        val pending = status.commandStatus in setOf("PENDING", "RUNNING", "TRIGGERED", "RESTART_REQUIRED")
+                        val canChange = !status.simulationEnabled && !readModeEnabled && !pending
+                        listOf(
+                            ConfigProvider.BACKEND_RF to "现有 RF Hook（默认）",
+                            ConfigProvider.BACKEND_VENDOR to "ColorOS 原生 NFC-A（实验）"
+                        ).forEach { (value, label) ->
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                RadioButton(
+                                    selected = backend == value,
+                                    enabled = canChange,
+                                    onClick = {
+                                        if (onBackendChanged(value)) {
+                                            backend = value
+                                            backendMessage = "已选择 ${if (value == ConfigProvider.BACKEND_RF) "RF Hook" else "ColorOS 原生接口"}"
+                                        } else backendMessage = "模式切换失败，请先停止模拟并恢复原厂配置"
+                                    }
+                                )
+                                Text(label, fontSize = 12.sp)
+                            }
+                        }
+                        Text(
+                            if (backend == ConfigProvider.BACKEND_VENDOR)
+                                "使用系统 VendorNfcAdapter 设置 UID/SAK/ATQA；API 接受不等于刷卡验证或关机模拟成功。切换前须停止当前模拟。"
+                            else "沿用原有 RF_CONFIG_WRITE / LA_NFCID1 修改与恢复流程。",
+                            color = Color.Gray, fontSize = 11.sp
+                        )
+                        backendMessage?.let { Text(it, fontSize = 11.sp) }
+                    }
+                }
+            }
             item {
                 ReadCardPanel(
                     scannedCard,
