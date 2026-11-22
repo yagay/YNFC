@@ -12,8 +12,8 @@ android {
         applicationId = "com.yagay.YNFC"
         minSdk = 31
         targetSdk = 37
-        versionCode = 57
-        versionName = "1.0.56"
+        versionCode = 58
+        versionName = "1.0.57"
         manifestPlaceholders["ynfcConfigAuthority"] = "com.yagay.YNFC.config"
 
         if (ciArm64Only) {
