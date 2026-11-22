@@ -22,6 +22,14 @@ class ConfigClient(private val resolver: ContentResolver) {
         )?.getLong(ConfigProvider.RESULT_GENERATION, 0L) ?: 0L
     }
 
+    fun setBackend(backend: String): Boolean =
+        resolver.call(
+            ConfigProvider.URI,
+            ConfigProvider.METHOD_SET_BACKEND,
+            null,
+            Bundle().apply { putString(ConfigProvider.EXTRA_BACKEND, backend) }
+        )?.getBoolean(ConfigProvider.RESULT_SUCCESS, false) == true
+
     fun setDiagnosticLogging(enabled: Boolean): Boolean =
         resolver.call(
             ConfigProvider.URI,
