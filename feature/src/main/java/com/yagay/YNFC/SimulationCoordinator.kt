@@ -13,6 +13,7 @@ internal class SimulationCoordinator(
     private val executor = Executors.newSingleThreadExecutor()
 
     fun simulate(card: CardModel, onDone: (RuntimeStatus, String) -> Unit) {
+        val vendor = selectedVendorBackend()
         val generation = configClient.publishCommand(enabled = true, card = card)
         AppLogger.i("SIMULATION: COMMAND APPLY published generation=$generation uid=${card.uid} sak=${card.sak} atqa=${card.atqa}")
         executor.execute {
@@ -24,6 +25,8 @@ internal class SimulationCoordinator(
             }
             state = waitForCommandCompletion(generation, card.uid, apply = true, timeoutMs = 12_000)
             val message = when {
+                vendor && state.handledGeneration == generation && state.commandStatus == "SUCCESS" ->
+                    "ColorOS 原生接口已接受 UID/SAK/ATQA 配置 · 需读卡器验证（不代表关机可用）"
                 SimulationResultPolicy.isApplySuccess(state, generation, card.uid) -> "模拟成功 · UID=${card.uid} · NFC进程内确认"
                 !state.hookInstalled -> "模拟请求已保存，但 Hook 未就绪"
                 state.commandGeneration != generation -> "模拟请求被更新的命令替代"
@@ -37,10 +40,18 @@ internal class SimulationCoordinator(
     }
 
     fun stop(onDone: (RuntimeStatus, String) -> Unit) {
+        val vendor = selectedVendorBackend()
         val generation = configClient.publishCommand(enabled = false, card = null)
         AppLogger.i("SIMULATION: COMMAND STOP published generation=$generation")
         executor.execute {
             var state = waitForCommandCompletion(generation, null, apply = false, timeoutMs = 6_000)
+            if (vendor) {
+                val accepted = state.commandGeneration == generation &&
+                    state.handledGeneration == generation && state.commandStatus == "SUCCESS"
+                onDone(state, if (accepted) "ColorOS 原生接口已接受停止请求 · 请验证官方卡恢复"
+                    else "原生接口停止失败 · ${state.commandDetail ?: "请检查日志并切换 NFC 开关"}")
+                return@execute
+            }
             if (SimulationResultPolicy.isStopSuccess(state, generation)) {
                 AppLogger.i("SIMULATION: STOP success without restart generation=$generation\n${statusSummary(state)}")
                 onDone(state, "模拟已停止 · 原厂 RF 已由 NFC 进程恢复")
@@ -89,7 +100,8 @@ internal class SimulationCoordinator(
             if (state.commandGeneration == generation && state.commandStatus == "RESTART_REQUIRED" &&
                 state.consumedGeneration == generation) return state
             if (state.commandGeneration == generation && state.handledGeneration == generation &&
-                state.commandStatus == "FAILED") return state
+                (state.commandStatus == "FAILED" ||
+                    (selectedVendorBackend() && state.commandStatus == "SUCCESS"))) return state
             Thread.sleep(100)
         }
         return state
@@ -105,6 +117,9 @@ internal class SimulationCoordinator(
         }
         return state
     }
+
+    private fun selectedVendorBackend(): Boolean =
+        runtimeRepository.readProviderMap()[ConfigProvider.KEY_BACKEND] == ConfigProvider.BACKEND_VENDOR
 
     private fun statusSummary(state: RuntimeStatus): String =
         RuntimeText.statusSummary(state, expectedHookBuild, readModeEnabled = false)
