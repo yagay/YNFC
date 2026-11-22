@@ -17,7 +17,7 @@ android {
         minSdk = 31
         buildConfigField("int", "VERSION_CODE", runtimeVersionCode.toString())
         buildConfigField("String", "VERSION_NAME", "\"1.0.57\"")
-        buildConfigField("int", "HOOK_BUILD", "40")
+        buildConfigField("int", "HOOK_BUILD", "41")
         buildConfigField("String", "CONFIG_AUTHORITY", "\"$configAuthority\"")
         manifestPlaceholders["ynfcConfigAuthority"] = configAuthority
         consumerProguardFiles("consumer-rules.pro")
