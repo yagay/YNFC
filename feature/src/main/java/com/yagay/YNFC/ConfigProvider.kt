@@ -24,6 +24,10 @@ open class ConfigProvider : ContentProvider() {
         val APP_BUILD: Int = BuildConfig.VERSION_CODE
 
         const val METHOD_PUBLISH_COMMAND = "publish_command"
+        const val METHOD_SET_BACKEND = "set_backend"
+        const val BACKEND_RF = "RF_HOOK"
+        const val BACKEND_VENDOR = "VENDOR_TYPE_A"
+        const val EXTRA_BACKEND = "backend"
         const val METHOD_SET_DIAGNOSTIC_LOGGING = "set_diagnostic_logging"
         const val METHOD_CONFIRM_STOCK_RESTART = "confirm_stock_restart"
         const val EXTRA_ENABLED = "enabled"
@@ -40,6 +44,7 @@ open class ConfigProvider : ContentProvider() {
         const val KEY_APP_BUILD = "app_build"
         const val KEY_HOOK_BUILD = "hook_build"
         const val KEY_SIMULATION_ENABLED = "simulation_enabled"
+        const val KEY_BACKEND = "simulation_backend"
         const val KEY_DIAGNOSTIC_LOGGING_ENABLED = "diagnostic_logging_enabled"
         const val KEY_UID = "uid"
         const val KEY_SAK = "sak"
@@ -244,6 +249,18 @@ open class ConfigProvider : ContentProvider() {
             return Bundle().apply { putBoolean(RESULT_SUCCESS, false) }
         }
         return when (method) {
+            METHOD_SET_BACKEND -> {
+                val value = extras?.getString(EXTRA_BACKEND)
+                val inFlight = prefs().getString(KEY_COMMAND_STATUS, "") in
+                    setOf("PENDING", "RUNNING", "TRIGGERED", "RESTART_REQUIRED")
+                val allowed = value in setOf(BACKEND_RF, BACKEND_VENDOR) &&
+                    !prefs().getBoolean(KEY_SIMULATION_ENABLED, false) && !inFlight
+                if (allowed) {
+                    prefs().edit().putString(KEY_BACKEND, value).commit()
+                    context?.contentResolver?.notifyChange(URI, null)
+                }
+                Bundle().apply { putBoolean(RESULT_SUCCESS, allowed) }
+            }
             METHOD_PUBLISH_COMMAND -> {
                 val enabled = extras?.getBoolean(EXTRA_ENABLED, false) == true
                 val uid = extras?.getString(EXTRA_UID)
